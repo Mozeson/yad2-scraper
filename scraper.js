@@ -81,7 +81,10 @@ const scrapeItems = async (url) => {
             .text()
             .trim();
 
-        const image = $item.find('.pic img').attr('src') || $item.find('img').first().attr('src') || '';
+        const image =
+            $item.find('.pic img').attr('src') ||
+            $item.find('img').first().attr('src') ||
+            '';
 
         let href =
             $item.find('a.private-item_box__Pff89').first().attr('href') ||
@@ -135,6 +138,61 @@ const createPushFlagForWorkflow = () => {
     fs.writeFileSync('push_me', '');
 };
 
+const formatSingleItemForTelegram = (item, index) => {
+    return [
+        `${index + 1}. ${item.title || 'ללא שם'}`,
+        `מחיר: ${item.price || 'לא צוין'}`,
+        `שנה/יד: ${item.yearAndHand || 'לא צוין'}`,
+        item.link ? `קישור: ${item.link}` : ''
+    ]
+        .filter(Boolean)
+        .join('\n');
+};
+
+const splitMessageByLength = (parts, maxLength = 3500) => {
+    const chunks = [];
+    let currentChunk = '';
+
+    for (const part of parts) {
+        const candidate = currentChunk
+            ? `${currentChunk}\n----------\n${part}`
+            : part;
+
+        if (candidate.length > maxLength) {
+            if (currentChunk) {
+                chunks.push(currentChunk);
+                currentChunk = part;
+            } else {
+                chunks.push(part.slice(0, maxLength));
+                currentChunk = '';
+            }
+        } else {
+            currentChunk = candidate;
+        }
+    }
+
+    if (currentChunk) {
+        chunks.push(currentChunk);
+    }
+
+    return chunks;
+};
+
+const sendItemsInChunks = async (telenode, chatId, header, items) => {
+    if (!items.length) {
+        await telenode.sendTextMessage(header, chatId);
+        return;
+    }
+
+    const parts = items.map((item, index) => formatSingleItemForTelegram(item, index));
+    const chunks = splitMessageByLength(parts);
+
+    for (let i = 0; i < chunks.length; i++) {
+        const prefix = i === 0 ? `${header}\n\n` : `המשך הרשימה (${i + 1}/${chunks.length}):\n\n`;
+        await telenode.sendTextMessage(prefix + chunks[i], chatId);
+    }
+};
+
 const checkIfHasNewItem = async (items, topic) => {
     ensureDataDir();
 
@@ -147,7 +205,16 @@ const checkIfHasNewItem = async (items, topic) => {
         savedItems = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (e) {
         if (e.code === 'ENOENT') {
-            fs.writeFileSync(filePath, '[]', 'utf8');
+            fs.writeFileSync(filePath, JSON.stringify(items, null, 2), 'utf8');
+
+            if (items.length > 0) {
+                await createPushFlagForWorkflow();
+            }
+
+            return {
+                isFirstRun: true,
+                newItems: []
+            };
         } else {
             console.log(e);
             throw new Error(`Could not read / create ${filePath}`);
@@ -169,22 +236,10 @@ const checkIfHasNewItem = async (items, topic) => {
         await createPushFlagForWorkflow();
     }
 
-    return newItems;
-};
-
-const formatItemsForTelegram = (items) => {
-    return items
-        .map((item, index) => {
-            return [
-                `${index + 1}. ${item.title || 'ללא שם'}`,
-                `מחיר: ${item.price || 'לא צוין'}`,
-                `שנה/יד: ${item.yearAndHand || 'לא צוין'}`,
-                item.link ? `קישור: ${item.link}` : ''
-            ]
-                .filter(Boolean)
-                .join('\n');
-        })
-        .join('\n----------\n');
+    return {
+        isFirstRun: false,
+        newItems
+    };
 };
 
 const scrape = async (topic, url) => {
@@ -200,12 +255,27 @@ const scrape = async (topic, url) => {
 
         saveItemsToCsv(scrapeResults, topic);
 
-        const newItems = await checkIfHasNewItem(scrapeResults, topic);
+        const { isFirstRun, newItems } = await checkIfHasNewItem(scrapeResults, topic);
+
+        if (isFirstRun) {
+            await sendItemsInChunks(
+                telenode,
+                chatId,
+                `📋 סריקה ראשונית עבור ${topic}\nנמצאו ${scrapeResults.length} מודעות קיימות:`,
+                scrapeResults
+            );
+            return;
+        }
+
         console.log(`Found ${newItems.length} new items for ${topic}`);
 
         if (newItems.length > 0) {
-            const msg = `🔔 נמצאו ${newItems.length} מודעות חדשות עבור ${topic}:\n\n${formatItemsForTelegram(newItems)}`;
-            await telenode.sendTextMessage(msg, chatId);
+            await sendItemsInChunks(
+                telenode,
+                chatId,
+                `🔔 נמצאו ${newItems.length} מודעות חדשות עבור ${topic}:`,
+                newItems
+            );
         } else {
             await telenode.sendTextMessage(`✅ אין מודעות חדשות עבור ${topic}`, chatId);
         }
