@@ -41,45 +41,31 @@ const scrapeItemsAndExtractImgUrls = async (url) => {
     return imageUrls;
 }
 
-const checkIfHasNewItem = async (imgUrls, topic) => {
+const checkIfHasNewItem = async (items, topic) => {
     const filePath = `./data/${topic}.json`;
-    let savedUrls = [];
+    let savedItems = [];
+
     try {
-        savedUrls = require(filePath);
+        savedItems = JSON.parse(fs.readFileSync(filePath, "utf8"));
     } catch (e) {
-        if (e.code === "MODULE_NOT_FOUND") {
-            fs.mkdirSync('data');
-            fs.writeFileSync(filePath, '[]');
+        if (e.code === "ENOENT") {
+            fs.mkdirSync("data", { recursive: true });
+            fs.writeFileSync(filePath, "[]");
         } else {
-            console.log(e);
             throw new Error(`Could not read / create ${filePath}`);
         }
     }
-    let shouldUpdateFile = false;
-    savedUrls = savedUrls.filter(savedUrl => {
-        shouldUpdateFile = true;
-        return imgUrls.includes(savedUrl);
-    });
-    const newItems = [];
-    imgUrls.forEach(url => {
-        if (!savedUrls.includes(url)) {
-            savedUrls.push(url);
-            newItems.push(url);
-            shouldUpdateFile = true;
-        }
-    });
-    if (shouldUpdateFile) {
-        const updatedUrls = JSON.stringify(savedUrls, null, 2);
-        fs.writeFileSync(filePath, updatedUrls);
-        await createPushFlagForWorkflow();
-    }
+
+    const getItemId = (item) =>
+        item.id || item.link || `${item.title}|${item.price}|${item.yearAndHand}`;
+
+    const savedIds = new Set(savedItems.map(getItemId));
+    const newItems = items.filter(item => !savedIds.has(getItemId(item)));
+
+    fs.writeFileSync(filePath, JSON.stringify(items, null, 2));
+
     return newItems;
-}
-
-const createPushFlagForWorkflow = () => {
-    fs.writeFileSync("push_me", "")
-}
-
+};
 const scrape = async (topic, url) => {
     const apiToken = process.env.API_TOKEN || config.telegramApiToken;
     const chatId = process.env.CHAT_ID || config.chatId;
