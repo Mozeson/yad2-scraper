@@ -98,6 +98,8 @@ const formatItem = (item) =>
         .filter(Boolean)
         .join('\n');
 
+const hasPrice = (item) => item.price && item.price !== 'לא צויין מחיר';
+
 // ─── Main flow ───────────────────────────────────────────────
 const scrape = async (topic, url) => {
     const apiToken = process.env.API_TOKEN || config.telegramApiToken;
@@ -111,9 +113,18 @@ const scrape = async (topic, url) => {
         const newItems = await checkIfHasNewItem(items, topic);
 
         if (newItems.length > 0) {
-            const msg = `🆕 ${newItems.length} new items:\n\n` +
-                newItems.map(formatItem).join('\n----------\n');
-            await telenode.sendTextMessage(msg, chatId);
+            const itemsWithPrice = newItems.filter(hasPrice);
+            const itemsWithoutPrice = newItems.filter((item) => !hasPrice(item));
+
+            const parts = [
+                `🆕 ${newItems.length} new items:\n`,
+                itemsWithPrice.map(formatItem).join('\n----------\n'),
+                itemsWithoutPrice.length > 0
+                    ? `\n📋 ישנם ${itemsWithoutPrice.length} רכבים שלא צויין לגביהם מחיר`
+                    : ''
+            ].filter(Boolean);
+
+            await telenode.sendTextMessage(parts.join('\n'), chatId);
         } else {
             await telenode.sendTextMessage('✅ No new items', chatId);
         }
