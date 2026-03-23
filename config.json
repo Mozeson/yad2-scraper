@@ -4,7 +4,7 @@
   "projects": [
     {
       "topic": "Family Car, == 30K, <170K",
-      "url": "https://www.yad2.co.il/vehicles/cars?carFamilyType=2&year=2015--1&price=-1-34000&km=-1-170000&engineval=1600--1"
+      "url": "https://www.yad2.co.il/vehicles/cars?carFamilyType=2&year=2015--1&price=10000-34000&km=-1-170000&engineval=1600--1&gearBox=102&priceOnly=1&imgOnly=1"
     }
   ]
 }
