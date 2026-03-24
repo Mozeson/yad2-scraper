@@ -3,7 +3,6 @@ const Telenode = require('telenode-js');
 const fs = require('fs');
 const config = require('./config.json');
 
-// ─── Helpers ────────────────────────────────────────────────
 const buildFullLink = (href = '') =>
     href.startsWith('http') ? href : `https://www.yad2.co.il${href}`;
 
@@ -15,11 +14,8 @@ const extractItemIdFromHref = (href = '') => {
 
 const cleanText = (text = '') => text.replace(/\s+/g, ' ').trim();
 
-// ─── Scrape with Playwright ─────────────────────────────────
 const scrapeItems = async (url) => {
-    const browser = await chromium.launch({
-        headless: true
-    });
+    const browser = await chromium.launch({ headless: true });
 
     const page = await browser.newPage({
         viewport: { width: 1440, height: 2600 },
@@ -126,7 +122,6 @@ const scrapeItems = async (url) => {
     }
 };
 
-// ─── Save & Diff ─────────────────────────────────────────────
 const checkIfHasNewItem = async (items, topic) => {
     const filePath = `./data/${topic}.json`;
     let savedItems = [];
@@ -149,10 +144,14 @@ const checkIfHasNewItem = async (items, topic) => {
     const newItems = items.filter((item) => !savedIds.has(getItemId(item)));
 
     fs.writeFileSync(filePath, JSON.stringify(items, null, 2));
+
+    if (newItems.length > 0) {
+        fs.writeFileSync('./push_me', '1');
+    }
+
     return newItems;
 };
 
-// ─── Format message ──────────────────────────────────────────
 const formatItem = (item) =>
     [
         `📌 ${item.title}`,
@@ -165,7 +164,6 @@ const formatItem = (item) =>
 
 const hasPrice = (item) => item.price && item.price !== 'לא צויין מחיר';
 
-// ─── Main flow ───────────────────────────────────────────────
 const scrape = async (topic, url) => {
     const apiToken = process.env.API_TOKEN || config.telegramApiToken;
     const chatId = process.env.CHAT_ID || config.chatId;
@@ -201,6 +199,10 @@ const scrape = async (topic, url) => {
 };
 
 const program = async () => {
+    if (fs.existsSync('./push_me')) {
+        fs.unlinkSync('./push_me');
+    }
+
     await Promise.all(
         config.projects
             .filter((project) => {
