@@ -1,69 +1,129 @@
-const cheerio = require('cheerio');
+const { chromium } = require('playwright');
 const Telenode = require('telenode-js');
 const fs = require('fs');
 const config = require('./config.json');
 
 // ─── Helpers ────────────────────────────────────────────────
-const buildFullLink = (href) =>
+const buildFullLink = (href = '') =>
     href.startsWith('http') ? href : `https://www.yad2.co.il${href}`;
 
-const extractItemIdFromHref = (href) => {
-    const parts = href.split('/');
+const extractItemIdFromHref = (href = '') => {
+    const cleanHref = href.split('?')[0].replace(/\/$/, '');
+    const parts = cleanHref.split('/');
     return parts[parts.length - 1] || href;
 };
 
-// ─── Fetch ───────────────────────────────────────────────────
-const getYad2Response = async (url) => {
-    try {
-        const res = await fetch(url, { method: 'GET', redirect: 'follow' });
-        return await res.text();
-    } catch (err) {
-        console.error('Fetch error:', err);
-    }
-};
+const cleanText = (text = '') => text.replace(/\s+/g, ' ').trim();
 
-// ─── Scrape ──────────────────────────────────────────────────
+// ─── Scrape with Playwright ─────────────────────────────────
 const scrapeItems = async (url) => {
-    const yad2Html = await getYad2Response(url);
-    if (!yad2Html) throw new Error('Could not get Yad2 response');
-
-    const $ = cheerio.load(yad2Html);
-    const titleText = $('title').first().text().trim();
-    if (titleText === 'ShieldSquare Captcha') throw new Error('Bot detection');
-
-    const items = [];
-
-    $('a.private-item_box__Pff89').each((_, elm) => {
-        try {
-            const $item = $(elm);
-            const title = $item
-                .find('.feed-item-info-section_heading__Bp32t')
-                .first().text().trim();
-            const yearAndHand = $item
-                .find('.feed-item-info-section_yearAndHandBox__H5oQ0')
-                .first().text().trim();
-            const price = $item
-                .find('[data-testid="feed-item-price-box"] .price_price__xQt90')
-                .first().text().trim();
-            const image = $item.find('img').first().attr('src') || '';
-            const href = $item.attr('href') || '';
-            const link = buildFullLink(href);
-            const id = extractItemIdFromHref(href);
-
-            if (id && (title || price)) {
-                items.push({ id, title, price, yearAndHand, image, link });
-            }
-        } catch (err) {
-            console.warn('Failed to parse item:', err.message);
-        }
+    const browser = await chromium.launch({
+        headless: true
     });
 
-    if (items.length === 0) {
-        throw new Error('No items found — possible bot detection or selector mismatch');
-    }
+    const page = await browser.newPage({
+        viewport: { width: 1440, height: 2600 },
+        userAgent:
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    });
 
-    console.log(`Scraped ${items.length} items`);
-    return items;
+    try {
+        await page.goto(url, {
+            waitUntil: 'domcontentloaded',
+            timeout: 120000
+        });
+
+        await page.waitForTimeout(5000);
+
+        const pageTitle = await page.title();
+        if (pageTitle.includes('ShieldSquare Captcha')) {
+            throw new Error('Bot detection / captcha page');
+        }
+
+        for (let i = 0; i < 5; i++) {
+            await page.mouse.wheel(0, 2500);
+            await page.waitForTimeout(1000);
+        }
+
+        await page.waitForSelector('.feed-item-info-section_heading__Bp32t', {
+            timeout: 20000
+        });
+
+        const items = await page.evaluate(() => {
+            const clean = (text = '') => text.replace(/\s+/g, ' ').trim();
+
+            const cards = Array.from(
+                document.querySelectorAll('a.private-item_box__Pff89')
+            );
+
+            return cards.map((card) => {
+                const title = clean(
+                    card.querySelector('.feed-item-info-section_heading__Bp32t')
+                        ?.textContent || ''
+                );
+
+                const yearAndHand = clean(
+                    card.querySelector('.feed-item-info-section_yearAndHandBox__H5oQ0')
+                        ?.textContent || ''
+                );
+
+                const price = clean(
+                    card.querySelector('[data-testid="feed-item-price-box"] .price_price__xQt90')
+                        ?.textContent || ''
+                );
+
+                const image =
+                    card.querySelector('img')?.getAttribute('src') ||
+                    card.querySelector('img')?.getAttribute('data-src') ||
+                    '';
+
+                const href = card.getAttribute('href') || '';
+
+                return {
+                    title,
+                    yearAndHand,
+                    price,
+                    image,
+                    href
+                };
+            });
+        });
+
+        const parsedItems = items
+            .map((item) => {
+                const link = buildFullLink(item.href);
+                const id = extractItemIdFromHref(item.href);
+
+                return {
+                    id,
+                    title: cleanText(item.title),
+                    price: cleanText(item.price),
+                    yearAndHand: cleanText(item.yearAndHand),
+                    image: item.image || '',
+                    link
+                };
+            })
+            .filter((item) => item.id && (item.title || item.price));
+
+        if (parsedItems.length === 0) {
+            throw new Error('No items found — possible bot detection or selector mismatch');
+        }
+
+        const deduped = [];
+        const seen = new Set();
+
+        for (const item of parsedItems) {
+            const key = item.id || item.link || `${item.title}|${item.price}|${item.yearAndHand}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            deduped.push(item);
+        }
+
+        console.log(`Scraped ${deduped.length} items`);
+        return deduped;
+    } finally {
+        await browser.close();
+    }
 };
 
 // ─── Save & Diff ─────────────────────────────────────────────
@@ -94,7 +154,12 @@ const checkIfHasNewItem = async (items, topic) => {
 
 // ─── Format message ──────────────────────────────────────────
 const formatItem = (item) =>
-    [`📌 ${item.title}`, `📅 ${item.yearAndHand}`, `💰 ${item.price}`, `🔗 ${item.link}`]
+    [
+        `📌 ${item.title}`,
+        `📅 ${item.yearAndHand}`,
+        `💰 ${item.price}`,
+        `🔗 ${item.link}`
+    ]
         .filter(Boolean)
         .join('\n');
 
